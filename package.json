@@ -1,0 +1,16 @@
+{
+  "name": "tnkno-l3-checksheet-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}
