@@ -82,18 +82,75 @@ function sendJson(response, status, payload) {
 }
 
 function parseJsonEnv(name) {
-  const raw = process.env[name];
+  const raw = process.env[name]?.trim();
   if (!raw) return null;
+  const attempts = [raw];
+
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    try {
+      const unwrapped = JSON.parse(raw);
+      if (typeof unwrapped === "string") attempts.push(unwrapped.trim());
+    } catch {
+      attempts.push(raw.slice(1, -1).trim());
+    }
+  }
+
+  const looksBase64 = /^[A-Za-z0-9+/_=-]+$/.test(raw) && raw.length > 40;
+  if (looksBase64) {
+    const decoded = Buffer.from(raw, "base64").toString("utf8").trim();
+    if (decoded.startsWith("{") || decoded.startsWith("[")) attempts.push(decoded);
+  }
+
+  let lastError = null;
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const preview = raw.slice(0, 80).replace(/\s+/g, " ");
+  throw new Error(
+    `${name} must be valid JSON${name === "GOOGLE_SERVICE_ACCOUNT_JSON" ? " or base64-encoded JSON" : ""}. ` +
+      `It starts with: ${preview}. Parser said: ${lastError?.message}`,
+  );
+}
+
+function parseServiceAccountEnv() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  const parsed = parseJsonEnv("GOOGLE_SERVICE_ACCOUNT_JSON");
+  if (!parsed?.private_key || !raw) return parsed;
+
+  return {
+    ...parsed,
+    private_key: String(parsed.private_key)
+      .replace(/\\n/g, "\n")
+      .replace(/\r\n/g, "\n"),
+  };
+}
+
+function parseSheetConfigEnv() {
+  const parsed = parseJsonEnv("SHEET_CONFIG");
+  if (!parsed) return null;
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed.sheets)) return parsed.sheets;
+  if (Array.isArray(parsed.systems)) return parsed.systems;
   try {
-    return JSON.parse(raw);
-  } catch {
-    const decoded = Buffer.from(raw, "base64").toString("utf8");
-    return JSON.parse(decoded);
+    return Object.entries(parsed).map(([system, item]) => ({
+      system,
+      ...(typeof item === "string" ? { sheetId: item } : item),
+    }));
+  } catch (error) {
+    throw new Error(`SHEET_CONFIG must be a JSON array or object. Parser said: ${error.message}`);
   }
 }
 
 function getSheetConfig() {
-  const config = parseJsonEnv("SHEET_CONFIG");
+  const config = parseSheetConfigEnv();
   if (!config) return null;
   if (!Array.isArray(config)) {
     throw new Error("SHEET_CONFIG must be a JSON array.");
@@ -133,7 +190,7 @@ async function getGoogleAccessToken() {
     return googleToken.accessToken;
   }
 
-  const serviceAccount = parseJsonEnv("GOOGLE_SERVICE_ACCOUNT_JSON");
+  const serviceAccount = parseServiceAccountEnv();
   if (!serviceAccount?.client_email || !serviceAccount?.private_key) {
     throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is missing client_email or private_key.");
   }
