@@ -102,6 +102,12 @@ function getSheetConfig() {
     overviewTab: "Overview",
     sourceFile: item.system,
     ...item,
+    sheetId:
+      item.sheetId ||
+      item.spreadsheetId ||
+      item.googleSheetId ||
+      item.googleSheetsId ||
+      item.id,
   }));
 }
 
@@ -294,7 +300,10 @@ function buildSystemPayload(config, matrix, lastModified = null) {
 
 async function readGoogleSystem(config) {
   if (!config.group || !config.system || !config.sheetId) {
-    throw new Error("Each SHEET_CONFIG item requires group, system, and sheetId.");
+    const keys = Object.keys(config).filter((key) => config[key] !== undefined).join(", ");
+    throw new Error(
+      `Each SHEET_CONFIG item requires group, system, and sheetId. Keys found: ${keys || "none"}.`,
+    );
   }
   const cacheKey = `google:${config.sheetId}:${config.overviewTab || "Overview"}`;
   const cached = cache.get(cacheKey);
