@@ -76,6 +76,51 @@ const palette = {
 const cache = new Map();
 let googleToken = null;
 
+const failureSheetDefs = [
+  {
+    sheet: "Module",
+    range: "A1:I2000",
+    statusCol: 6,
+    source: "Conveyors/Panels/Field Devices",
+    fields: ["category", "location", "item", "description", "type", null, null, null, "detail"],
+  },
+  {
+    sheet: "System Logic",
+    range: "A1:H2000",
+    statusCol: 7,
+    source: "System Logic",
+    fields: ["id", "category", "test", "location", "item", "description", null, "detail"],
+  },
+  {
+    sheet: "Stats",
+    range: "A1:G2000",
+    statusCol: 6,
+    source: "HMI Statistics",
+    fields: ["category", "subCategory", "item", "description", "type", null, "detail"],
+  },
+  {
+    sheet: "Stats (2)",
+    range: "A1:G2000",
+    statusCol: 6,
+    source: "HMI Statistics",
+    fields: ["category", "subCategory", "item", "description", "type", null, "detail"],
+  },
+  {
+    sheet: "Reporting Summary",
+    range: "A1:H2000",
+    statusCol: 7,
+    source: "BAU Push / Reporting",
+    fields: ["id", "category", "subCategory", "item", "type", "description", null, "detail"],
+  },
+  {
+    sheet: "HSLA",
+    range: "A1:H2000",
+    statusCol: 7,
+    source: "HSLA",
+    fields: ["id", "category", "step", "item", "description", "action", null, "detail"],
+  },
+];
+
 function sendJson(response, status, payload) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
@@ -271,7 +316,39 @@ function metric(label, complete, total = null, passed = null, failed = null, ton
   };
 }
 
-function buildSystemPayload(config, matrix, lastModified = null) {
+function isFailValue(raw) {
+  return ["f", "fail", "failed"].includes(String(raw || "").trim().toLowerCase());
+}
+
+function firstMeaningful(...values) {
+  return values.find((value) => value !== null && value !== undefined && String(value).trim() !== "") || null;
+}
+
+function extractFailuresFromRows(def, rows) {
+  const failures = [];
+  for (let index = 1; index < rows.length; index += 1) {
+    const row = rows[index] || [];
+    if (!isFailValue(row[def.statusCol - 1])) continue;
+    const item = {};
+    def.fields.forEach((field, colIndex) => {
+      if (field) item[field] = normalizeValue(row[colIndex]);
+    });
+    failures.push({
+      source: def.source,
+      sheet: def.sheet,
+      row: index + 1,
+      category: firstMeaningful(item.category, item.subCategory, item.test),
+      location: firstMeaningful(item.location, item.step),
+      item: firstMeaningful(item.item, item.description, item.metric, item.test, `Row ${index + 1}`),
+      description: firstMeaningful(item.description, item.action, item.type),
+      detail: firstMeaningful(item.detail, item.action),
+      status: "Fail",
+    });
+  }
+  return failures;
+}
+
+function buildSystemPayload(config, matrix, lastModified = null, failures = []) {
   const metrics = [
     metric(cell(matrix, 3, 2), normalizePercent(cell(matrix, 3, 3)), null, null, null, "primary"),
     metric(
@@ -359,9 +436,34 @@ function buildSystemPayload(config, matrix, lastModified = null) {
     metrics,
     breakdown,
     moduleRows,
+    failures,
     group: config.group,
     system: config.system,
   };
+}
+
+async function fetchGoogleRange(config, range) {
+  const token = await getGoogleAccessToken();
+  const url = new URL(
+    `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}/values/${encodeURIComponent(
+      range,
+    )}`,
+  );
+  url.searchParams.set("valueRenderOption", "FORMATTED_VALUE");
+  url.searchParams.set("dateTimeRenderOption", "FORMATTED_STRING");
+
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const message = payload.error?.message || "";
+    if (response.status === 400 && /Unable to parse range|out of bounds|not found/i.test(message)) {
+      return [];
+    }
+    throw new Error(message || `Google Sheets read failed for ${config.system}.`);
+  }
+  return payload.values || [];
 }
 
 async function readGoogleSystem(config) {
@@ -375,24 +477,16 @@ async function readGoogleSystem(config) {
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.cachedAt < 30_000) return cached.data;
 
-  const token = await getGoogleAccessToken();
   const tab = quoteSheetName(config.overviewTab || "Overview");
-  const url = new URL(
-    `https://sheets.googleapis.com/v4/spreadsheets/${config.sheetId}/values/${encodeURIComponent(
-      `${tab}!A1:J31`,
-    )}`,
+  const overview = await fetchGoogleRange(config, `${tab}!A1:J31`);
+  const failureResults = await Promise.all(
+    failureSheetDefs.map(async (def) => {
+      const rows = await fetchGoogleRange(config, `${quoteSheetName(def.sheet)}!${def.range}`);
+      return extractFailuresFromRows(def, rows);
+    }),
   );
-  url.searchParams.set("valueRenderOption", "FORMATTED_VALUE");
-  url.searchParams.set("dateTimeRenderOption", "FORMATTED_STRING");
-
-  const response = await fetch(url, {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error?.message || `Google Sheets read failed for ${config.system}.`);
-  }
-  const data = buildSystemPayload(config, payload.values || []);
+  const failures = failureResults.flat();
+  const data = buildSystemPayload(config, overview, null, failures);
   data.sourcePath = `google-sheets:${config.sheetId}`;
   cache.set(cacheKey, { cachedAt: Date.now(), data });
   return data;

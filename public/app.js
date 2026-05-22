@@ -100,6 +100,48 @@ function moduleRow(row) {
   `;
 }
 
+function failureRow(failure) {
+  return `
+    <tr>
+      <td><span class="failure-source">${display(failure.source)}</span></td>
+      <td>${display(failure.location)}</td>
+      <td><strong>${display(failure.item)}</strong><small>${display(failure.description)}</small></td>
+      <td>${display(failure.detail)}</td>
+    </tr>
+  `;
+}
+
+function failurePanel(system) {
+  const failures = system.failures || [];
+  return `
+    <article class="panel failure-panel">
+      <div class="panel-header">
+        <div>
+          <h2>Points of Failure</h2>
+          <span>${failures.length ? `${failures.length} failed items found` : "No failed items found"}</span>
+        </div>
+      </div>
+      ${
+        failures.length
+          ? `<div class="table-scroll">
+              <table class="table failure-table">
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>Location</th>
+                    <th>Failed Item</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>${failures.map(failureRow).join("")}</tbody>
+              </table>
+            </div>`
+          : `<div class="empty-failures">No failed checks are currently reported for ${system.system}.</div>`
+      }
+    </article>
+  `;
+}
+
 function groupButtons() {
   return GROUPS.map(
     (group) => `
@@ -215,6 +257,8 @@ function systemDashboard(system) {
             </div>
           </article>
         </section>
+
+        ${failurePanel(system)}
 
         <article class="panel module-panel">
           <div class="panel-header">

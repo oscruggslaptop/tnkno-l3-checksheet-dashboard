@@ -16,6 +16,45 @@ PALETTE = {
     "white": "#FFFFFF",
 }
 
+FAILURE_SHEETS = [
+    {
+        "sheet": "Module",
+        "status_col": 6,
+        "source": "Conveyors/Panels/Field Devices",
+        "fields": ["category", "location", "item", "description", "type", None, None, None, "detail"],
+    },
+    {
+        "sheet": "System Logic",
+        "status_col": 7,
+        "source": "System Logic",
+        "fields": ["id", "category", "test", "location", "item", "description", None, "detail"],
+    },
+    {
+        "sheet": "Stats",
+        "status_col": 6,
+        "source": "HMI Statistics",
+        "fields": ["category", "subCategory", "item", "description", "type", None, "detail"],
+    },
+    {
+        "sheet": "Stats (2)",
+        "status_col": 6,
+        "source": "HMI Statistics",
+        "fields": ["category", "subCategory", "item", "description", "type", None, "detail"],
+    },
+    {
+        "sheet": "Reporting Summary",
+        "status_col": 7,
+        "source": "BAU Push / Reporting",
+        "fields": ["id", "category", "subCategory", "item", "type", "description", None, "detail"],
+    },
+    {
+        "sheet": "HSLA",
+        "status_col": 7,
+        "source": "HSLA",
+        "fields": ["id", "category", "step", "item", "description", "action", None, "detail"],
+    },
+]
+
 
 def value(ws, cell):
     raw = ws[cell].value
@@ -37,6 +76,60 @@ def metric(label, complete, total=None, passed=None, failed=None, tone="neutral"
         "failed": failed,
         "tone": tone,
     }
+
+
+def clean(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.isoformat()
+    text = str(raw).replace("\xa0", " ").strip()
+    return text if text else None
+
+
+def first_meaningful(*values):
+    for item in values:
+        if item is not None and str(item).strip():
+            return item
+    return None
+
+
+def extract_failures(wb):
+    failures = []
+    for definition in FAILURE_SHEETS:
+        if definition["sheet"] not in wb.sheetnames:
+            continue
+        ws = wb[definition["sheet"]]
+        for row_number, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if row_number == 1:
+                continue
+            status = clean(row[definition["status_col"] - 1] if len(row) >= definition["status_col"] else None)
+            if str(status).lower() not in {"f", "fail", "failed"}:
+                continue
+            item = {}
+            for index, field in enumerate(definition["fields"]):
+                if field and index < len(row):
+                    item[field] = clean(row[index])
+            failures.append(
+                {
+                    "source": definition["source"],
+                    "sheet": definition["sheet"],
+                    "row": row_number,
+                    "category": first_meaningful(item.get("category"), item.get("subCategory"), item.get("test")),
+                    "location": first_meaningful(item.get("location"), item.get("step")),
+                    "item": first_meaningful(
+                        item.get("item"),
+                        item.get("description"),
+                        item.get("metric"),
+                        item.get("test"),
+                        f"Row {row_number}",
+                    ),
+                    "description": first_meaningful(item.get("description"), item.get("action"), item.get("type")),
+                    "detail": first_meaningful(item.get("detail"), item.get("action")),
+                    "status": "Fail",
+                }
+            )
+    return failures
 
 
 def main():
@@ -103,6 +196,7 @@ def main():
         "metrics": metrics,
         "breakdown": breakdown,
         "moduleRows": moduleRows,
+        "failures": extract_failures(wb),
     }
     print(json.dumps(payload, default=str))
 
