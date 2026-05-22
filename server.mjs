@@ -98,17 +98,26 @@ function getSheetConfig() {
   if (!Array.isArray(config)) {
     throw new Error("SHEET_CONFIG must be a JSON array.");
   }
-  return config.map((item) => ({
-    overviewTab: "Overview",
-    sourceFile: item.system,
-    ...item,
-    sheetId:
-      item.sheetId ||
-      item.spreadsheetId ||
-      item.googleSheetId ||
-      item.googleSheetsId ||
-      item.id,
-  }));
+  return config.map((item) => {
+    const accidentalSheetIdKey = Object.keys(item).find(
+      (key) =>
+        !["group", "system", "sourceFile", "overviewTab", "sheetId", "spreadsheetId", "googleSheetId", "googleSheetsId", "id"].includes(
+          key,
+        ) && /^[A-Za-z0-9_-]{25,}$/.test(key),
+    );
+    return {
+      overviewTab: "Overview",
+      sourceFile: item.system,
+      ...item,
+      sheetId:
+        item.sheetId ||
+        item.spreadsheetId ||
+        item.googleSheetId ||
+        item.googleSheetsId ||
+        item.id ||
+        accidentalSheetIdKey,
+    };
+  });
 }
 
 function base64Url(input) {
