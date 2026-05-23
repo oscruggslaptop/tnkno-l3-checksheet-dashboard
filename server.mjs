@@ -8,6 +8,9 @@ import { spawn } from "node:child_process";
 const root = resolve(".");
 const publicDir = join(root, "public");
 const port = Number(process.env.PORT || 4173);
+const databaseUrl = process.env.DATABASE_URL;
+const importIntervalMinutes = Number(process.env.IMPORT_INTERVAL_MINUTES || 30);
+const importSecret = process.env.IMPORT_SECRET;
 const pythonPath =
   process.env.PYTHON_PATH ||
   "C:\\Users\\oscru\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
@@ -75,6 +78,9 @@ const palette = {
 
 const cache = new Map();
 let googleToken = null;
+let pgPoolPromise = null;
+let schemaReadyPromise = null;
+let importInFlight = null;
 
 const failureSheetDefs = [
   {
@@ -271,6 +277,32 @@ async function getGoogleAccessToken() {
     expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
   };
   return googleToken.accessToken;
+}
+
+async function getPgPool() {
+  if (!databaseUrl) return null;
+  if (!pgPoolPromise) {
+    pgPoolPromise = import("pg").then(({ Pool }) => {
+      const sslDisabled = process.env.PGSSLMODE === "disable" || process.env.DATABASE_SSL === "false";
+      return new Pool({
+        connectionString: databaseUrl,
+        ssl: sslDisabled ? false : { rejectUnauthorized: false },
+      });
+    });
+  }
+  return pgPoolPromise;
+}
+
+async function ensureDatabaseSchema() {
+  const pool = await getPgPool();
+  if (!pool) return null;
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = readFile(join(root, "scripts", "schema.sql"), "utf8").then((schema) =>
+      pool.query(schema),
+    );
+  }
+  await schemaReadyPromise;
+  return pool;
 }
 
 function quoteSheetName(name) {
@@ -552,7 +584,7 @@ async function readSystem(config, mode) {
   }
 }
 
-async function getOverview() {
+async function getSourceOverview() {
   const sheetConfig = getSheetConfig();
   const mode = sheetConfig ? "google" : "local";
   const config = sheetConfig || localWorkbookConfig;
@@ -574,6 +606,109 @@ async function getOverview() {
     groups: Object.values(groups),
     systems,
   };
+}
+
+async function saveDashboardSnapshot(dashboard) {
+  const pool = await ensureDatabaseSchema();
+  if (!pool) return dashboard;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const snapshot = await client.query(
+      "INSERT INTO dashboard_snapshots (source, data) VALUES ($1, $2::jsonb) RETURNING id, imported_at",
+      [dashboard.dataSource || "unknown", JSON.stringify(dashboard)],
+    );
+    const snapshotId = snapshot.rows[0].id;
+
+    for (const system of dashboard.systems || []) {
+      await client.query(
+        `INSERT INTO dashboard_system_snapshots
+          (dashboard_snapshot_id, system_group, system_name, source_file, overall_complete, overall_pass, failure_count, data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [
+          snapshotId,
+          system.group,
+          system.system,
+          system.sourceFile || null,
+          system.summary?.overallComplete ?? null,
+          system.summary?.overallPass ?? null,
+          system.failures?.length || 0,
+          JSON.stringify(system),
+        ],
+      );
+
+      for (const failure of system.failures || []) {
+        await client.query(
+          `INSERT INTO dashboard_failure_snapshots
+            (dashboard_snapshot_id, system_group, system_name, source, sheet, row_number, category, location, item, description, detail, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [
+            snapshotId,
+            system.group,
+            system.system,
+            failure.source || null,
+            failure.sheet || null,
+            failure.row || null,
+            failure.category || null,
+            failure.location || null,
+            failure.item || null,
+            failure.description || null,
+            failure.detail || null,
+            failure.status || null,
+          ],
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    return {
+      ...dashboard,
+      dataSource: `database:${dashboard.dataSource || "unknown"}`,
+      databaseSnapshotId: Number(snapshotId),
+      databaseImportedAt: snapshot.rows[0].imported_at,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function readLatestDashboardSnapshot() {
+  const pool = await ensureDatabaseSchema();
+  if (!pool) return null;
+  const result = await pool.query(
+    "SELECT id, data, imported_at FROM dashboard_snapshots ORDER BY imported_at DESC LIMIT 1",
+  );
+  if (!result.rows[0]) return null;
+  return {
+    ...result.rows[0].data,
+    dataSource: `database:${result.rows[0].data.dataSource || "unknown"}`,
+    databaseSnapshotId: Number(result.rows[0].id),
+    databaseImportedAt: result.rows[0].imported_at,
+  };
+}
+
+async function importDashboardToDatabase() {
+  if (importInFlight) return importInFlight;
+  importInFlight = (async () => {
+    const dashboard = await getSourceOverview();
+    return saveDashboardSnapshot(dashboard);
+  })();
+  try {
+    return await importInFlight;
+  } finally {
+    importInFlight = null;
+  }
+}
+
+async function getOverview() {
+  if (!databaseUrl) return getSourceOverview();
+  const latest = await readLatestDashboardSnapshot();
+  if (latest) return latest;
+  return importDashboardToDatabase();
 }
 
 async function getGroupOverview(groupName) {
@@ -623,6 +758,37 @@ async function serveStatic(request, response) {
 }
 
 const server = createServer(async (request, response) => {
+  if (request.url?.startsWith("/api/import")) {
+    if (request.method !== "POST") {
+      sendJson(response, 405, { error: "Use POST /api/import to import dashboard data." });
+      return;
+    }
+    if (importSecret && request.headers["x-import-secret"] !== importSecret) {
+      sendJson(response, 401, { error: "Invalid import secret." });
+      return;
+    }
+    if (!databaseUrl) {
+      sendJson(response, 400, { error: "DATABASE_URL is not configured." });
+      return;
+    }
+    try {
+      const imported = await importDashboardToDatabase();
+      sendJson(response, 200, {
+        ok: true,
+        databaseSnapshotId: imported.databaseSnapshotId,
+        databaseImportedAt: imported.databaseImportedAt,
+        groups: imported.groups?.length || 0,
+        systems: imported.systems?.length || 0,
+      });
+    } catch (error) {
+      sendJson(response, 500, {
+        error: "Unable to import dashboard data into the database.",
+        detail: error.message,
+      });
+    }
+    return;
+  }
+
   if (request.url?.startsWith("/api/dashboard")) {
     try {
       const url = new URL(request.url, `http://${request.headers.host}`);
@@ -644,7 +810,28 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
-  const source = process.env.SHEET_CONFIG ? "Google Sheets" : "local XLSM fallback";
+  const source = databaseUrl
+    ? "PostgreSQL snapshots"
+    : process.env.SHEET_CONFIG
+      ? "Google Sheets"
+      : "local XLSM fallback";
   console.log(`TNKNO L3 Checksheet Dashboard running at http://localhost:${port}`);
   console.log(`Reading dashboard data from ${source}`);
 });
+
+if (databaseUrl) {
+  importDashboardToDatabase().catch((error) => {
+    console.error("Initial database import failed:", error.message);
+  });
+
+  if (Number.isFinite(importIntervalMinutes) && importIntervalMinutes > 0) {
+    setInterval(
+      () => {
+        importDashboardToDatabase().catch((error) => {
+          console.error("Scheduled database import failed:", error.message);
+        });
+      },
+      importIntervalMinutes * 60 * 1000,
+    ).unref();
+  }
+}

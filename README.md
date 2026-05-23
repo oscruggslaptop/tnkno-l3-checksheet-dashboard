@@ -2,7 +2,7 @@
 
 Live web dashboard for TNKNO L3 checksheets across ACB, Outbound, and Primary systems.
 
-The app is deployable as a Node web service. In production it reads Google Sheets through a service account. For local development, when `SHEET_CONFIG` is not set, it falls back to the local XLSM files on `G:\My Drive`.
+The app is deployable as a Node web service. In production it can either read Google Sheets directly or store Google Sheets imports in PostgreSQL and serve the dashboard from the latest database snapshot. For local development, when `SHEET_CONFIG` is not set, it falls back to the local XLSM files on `G:\My Drive`.
 
 ## Local Run
 
@@ -53,6 +53,39 @@ Copy `.env.example` values into Render environment variables.
 ]
 ```
 
+### Optional Database Mode
+
+Set `DATABASE_URL` to enable PostgreSQL snapshot storage.
+
+When enabled:
+
+- The app imports all Google Sheets on startup.
+- The app repeats imports every `IMPORT_INTERVAL_MINUTES`.
+- `/api/dashboard` reads the latest saved database snapshot.
+- `POST /api/import` triggers a manual import.
+
+Recommended Render variables:
+
+```text
+DATABASE_URL=<your Postgres internal/external connection string>
+IMPORT_INTERVAL_MINUTES=30
+IMPORT_SECRET=<random long secret>
+```
+
+Manual import:
+
+```powershell
+Invoke-WebRequest -Uri https://YOUR_RENDER_URL/api/import -Method POST -Headers @{"x-import-secret"="YOUR_IMPORT_SECRET"}
+```
+
+Database tables are created automatically from `scripts/schema.sql`:
+
+```text
+dashboard_snapshots
+dashboard_system_snapshots
+dashboard_failure_snapshots
+```
+
 ## GitHub
 
 ```powershell
@@ -80,6 +113,9 @@ Add these Render environment variables:
 GOOGLE_SERVICE_ACCOUNT_JSON
 SHEET_CONFIG
 PORT
+DATABASE_URL
+IMPORT_INTERVAL_MINUTES
+IMPORT_SECRET
 ```
 
-Render provides a public URL after deploy. The dashboard refreshes from `/api/dashboard` every 30 seconds and reads the latest saved Google Sheets values.
+Render provides a public URL after deploy. The dashboard refreshes from `/api/dashboard` every 30 seconds. With database mode enabled, the page reads the latest saved database snapshot; otherwise it reads Google Sheets directly.
