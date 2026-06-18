@@ -11,50 +11,20 @@ const port = Number(process.env.PORT || 4173);
 const databaseUrl = process.env.DATABASE_URL;
 const importIntervalMinutes = Number(process.env.IMPORT_INTERVAL_MINUTES || 30);
 const importSecret = process.env.IMPORT_SECRET;
+const appTitle = "PATHO L3 Checksheet Dashboard";
+const issuesPdfPath =
+  process.env.ISSUES_PDF_PATH ||
+  "G:\\My Drive\\PATHO\\L3 Commissioning issues-202606181354.pdf";
 const pythonPath =
   process.env.PYTHON_PATH ||
   "C:\\Users\\oscru\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
 
 const localWorkbookConfig = [
   {
-    group: "ACB",
-    system: "ACB1",
-    path: "G:\\My Drive\\ACB\\ACB\\TNKNO_ACB1_L3 Checksheet 2026.xlsm",
-  },
-  {
-    group: "ACB",
-    system: "ACB2",
-    path: "G:\\My Drive\\ACB\\ACB\\TNKNO_ACB2_L3 Checksheet 2026 rev1.3.xlsm",
-  },
-  {
-    group: "Outbound",
-    system: "PD1",
-    path: "G:\\My Drive\\OUTBOUND\\OUTBOUND\\PD1 L3 CHECKSHEET.xlsm",
-  },
-  {
-    group: "Outbound",
-    system: "PD2",
-    path: "G:\\My Drive\\OUTBOUND\\OUTBOUND\\PD2 L3 CHECKSHEET v2.xlsm",
-  },
-  {
-    group: "Outbound",
-    system: "PD3",
-    path: "G:\\My Drive\\OUTBOUND\\OUTBOUND\\PD3 L3 CHECKSHEET.xlsm",
-  },
-  {
-    group: "Primary",
+    group: "PATHO",
     system: "PS1",
-    path: "G:\\My Drive\\PRIMARY\\PRIMARY\\PS1 - Checksheet - Ignition 2.0.1.xlsm",
-  },
-  {
-    group: "Primary",
-    system: "PS2",
-    path: "G:\\My Drive\\PRIMARY\\PRIMARY\\PS2 - Checksheet - Ignition2.0.xlsm",
-  },
-  {
-    group: "Primary",
-    system: "PS3",
-    path: "G:\\My Drive\\PRIMARY\\PRIMARY\\PS3- Checksheet - Ignition2.0.xlsm",
+    sourceFile: "PATHO L3 Checksheet 2026 rev1.4 (1).xlsm",
+    path: "G:\\My Drive\\PATHO\\PATHO L3 Checksheet 2026 rev1.4 (1).xlsm",
   },
 ];
 
@@ -453,7 +423,7 @@ function buildSystemPayload(config, matrix, lastModified = null, failures = []) 
   }
 
   return {
-    title: "TNKNO L3 Checksheet Dashboard",
+    title: appTitle,
     module: cell(matrix, 2, 2) || config.system,
     sheet: config.overviewTab || "Overview",
     sourceFile: config.sourceFile || config.system,
@@ -551,6 +521,33 @@ function runLocalExtractor(sourcePath, modifiedMs) {
   });
 }
 
+function runLocalIssuesExtractor(sourcePath, modifiedMs) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(pythonPath, [join(root, "scripts", "extract_issues.py"), sourcePath], {
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `Issues extractor exited with ${code}`));
+        return;
+      }
+      try {
+        resolvePromise(JSON.parse(stdout));
+      } catch (error) {
+        reject(new Error(`Could not parse issues extractor output: ${error.message}`));
+      }
+    });
+  });
+}
+
 async function readLocalSystem(config) {
   const info = await stat(config.path);
   const cacheKey = `local:${config.path}`;
@@ -564,10 +561,32 @@ async function readLocalSystem(config) {
     modifiedMs: info.mtimeMs,
     group: config.group,
     system: config.system,
-    title: "TNKNO L3 Checksheet Dashboard",
+    title: appTitle,
   };
   cache.set(cacheKey, { modifiedMs: info.mtimeMs, data });
   return data;
+}
+
+async function readLocalIssues() {
+  try {
+    const info = await stat(issuesPdfPath);
+    const cacheKey = `local-issues:${issuesPdfPath}`;
+    const cached = cache.get(cacheKey);
+    if (cached && cached.modifiedMs === info.mtimeMs) return cached.data;
+
+    const issues = await runLocalIssuesExtractor(issuesPdfPath, info.mtimeMs);
+    cache.set(cacheKey, { modifiedMs: info.mtimeMs, data: issues });
+    return issues;
+  } catch (error) {
+    return {
+      sourceFile: issuesPdfPath.split("\\").pop(),
+      sourcePath: issuesPdfPath,
+      total: 0,
+      statusCounts: {},
+      items: [],
+      error: error.message,
+    };
+  }
 }
 
 async function readSystem(config, mode) {
@@ -589,6 +608,11 @@ async function getSourceOverview() {
   const mode = sheetConfig ? "google" : "local";
   const config = sheetConfig || localWorkbookConfig;
   const systems = await Promise.all(config.map((item) => readSystem(item, mode)));
+  const issues = mode === "local" ? await readLocalIssues() : { total: 0, statusCounts: {}, items: [] };
+
+  for (const system of systems) {
+    if (!system.error) system.issues = issues.items || [];
+  }
 
   const groups = config.reduce((acc, item) => {
     if (!acc[item.group]) acc[item.group] = { name: item.group, systems: [] };
@@ -600,9 +624,10 @@ async function getSourceOverview() {
   }, {});
 
   return {
-    title: "TNKNO L3 Checksheet Dashboard",
+    title: appTitle,
     dataSource: mode,
     refreshedAt: new Date().toISOString(),
+    issues,
     groups: Object.values(groups),
     systems,
   };
@@ -796,7 +821,7 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, overview);
     } catch (error) {
       sendJson(response, 500, {
-        error: "Unable to read the TNKNO L3 Checksheet workbooks.",
+        error: "Unable to read the PATHO L3 Checksheet workbook.",
         detail: error.message,
       });
     }
@@ -815,7 +840,7 @@ server.listen(port, () => {
     : process.env.SHEET_CONFIG
       ? "Google Sheets"
       : "local XLSM fallback";
-  console.log(`TNKNO L3 Checksheet Dashboard running at http://localhost:${port}`);
+  console.log(`${appTitle} running at http://localhost:${port}`);
   console.log(`Reading dashboard data from ${source}`);
 });
 

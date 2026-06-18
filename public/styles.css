@@ -849,6 +849,114 @@ body {
   grid-column: 2 / -1;
 }
 
+.issues-panel {
+  grid-column: 2 / -1;
+}
+
+.issues-list {
+  display: grid;
+  gap: 10px;
+}
+
+.issue-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  background: rgba(7, 16, 24, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+.issue-id {
+  display: grid;
+  min-height: 54px;
+  place-items: center;
+  color: var(--slate-2);
+  background: var(--amber);
+  border-radius: 7px;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.issue-body {
+  min-width: 0;
+}
+
+.issue-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.issue-title-row h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.issue-body p {
+  max-width: 980px;
+  margin: 8px 0 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.issue-badges,
+.issue-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.issue-status,
+.issue-priority,
+.issue-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.issue-status {
+  color: #fecaca;
+  background: rgba(255, 0, 0, 0.12);
+  border: 1px solid rgba(255, 0, 0, 0.28);
+}
+
+.issue-priority {
+  color: var(--slate-2);
+  background: var(--amber);
+}
+
+.issue-meta {
+  margin-top: 10px;
+}
+
+.issue-meta span {
+  color: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.issue-location {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+}
+
+.issue-location strong {
+  color: var(--white);
+}
+
 .module-grid {
   grid-template-columns: 0.72fr 1.28fr;
   gap: 14px;
@@ -951,5 +1059,13 @@ body {
 
   .failure-panel {
     grid-column: auto;
+  }
+
+  .issues-panel {
+    grid-column: auto;
+  }
+
+  .issue-card {
+    grid-template-columns: 1fr;
   }
 }

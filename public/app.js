@@ -1,7 +1,6 @@
 const app = document.querySelector("#app");
-const GROUPS = ["ACB", "Outbound", "Primary"];
 let dashboardData = null;
-let selectedGroup = location.hash.replace("#", "") || "ACB";
+let selectedGroup = location.hash.replace("#", "") || null;
 
 const formatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -21,6 +20,15 @@ function percentNumber(value) {
   return Math.max(0, Math.min(100, value * 100));
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function display(value) {
   if (value === null || value === undefined || value === "") return "N/A";
   if (typeof value === "number") {
@@ -30,7 +38,7 @@ function display(value) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
     return formatter.format(new Date(value));
   }
-  return String(value).replace(/\u00a0/g, " ").trim();
+  return escapeHtml(String(value).replace(/\u00a0/g, " ").trim());
 }
 
 function countDisplay(value) {
@@ -142,11 +150,67 @@ function failurePanel(system) {
   `;
 }
 
+function issueRow(issue) {
+  const status = display(issue.status || "Open");
+  const badges = [
+    `<span class="issue-status">${status}</span>`,
+    issue.priority ? `<span class="issue-priority">${display(issue.priority)}</span>` : null,
+  ].filter(Boolean);
+  const meta = [
+    issue.assignedTo ? `Assigned to ${display(issue.assignedTo)}` : null,
+    issue.dueDate ? `Due ${display(issue.dueDate)}` : null,
+    issue.dueStatus ? display(issue.dueStatus) : null,
+  ].filter(Boolean);
+
+  return `
+    <article class="issue-card">
+      <div class="issue-id">#${display(issue.id)}</div>
+      <div class="issue-body">
+        <div class="issue-title-row">
+          <h3>${display(issue.title)}</h3>
+          <div class="issue-badges">
+            ${badges.join("")}
+          </div>
+        </div>
+        <p>${display(issue.description)}</p>
+        <div class="issue-meta">${meta.map((item) => `<span>${item}</span>`).join("")}</div>
+        <div class="issue-location">
+          <strong>${display(issue.location)}</strong>
+          <span>${display(issue.locationDetails)}</span>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function issuesPanel(system) {
+  const issues = system.issues || dashboardData.issues?.items || [];
+  const issueSource = dashboardData.issues?.sourceFile;
+  const issueError = dashboardData.issues?.error;
+  return `
+    <article class="panel issues-panel">
+      <div class="panel-header">
+        <div>
+          <h2>Current Open Issues</h2>
+          <span>${issues.length ? `${issues.length} issues from ${display(issueSource)}` : "No current issues loaded"}</span>
+        </div>
+      </div>
+      ${
+        issueError
+          ? `<div class="empty-failures">Issue report could not be read: ${display(issueError)}</div>`
+          : issues.length
+            ? `<div class="issues-list">${issues.map(issueRow).join("")}</div>`
+            : `<div class="empty-failures">No current open issues are listed for this dashboard.</div>`
+      }
+    </article>
+  `;
+}
+
 function groupButtons() {
-  return GROUPS.map(
+  return dashboardData.groups.map(
     (group) => `
-      <button class="group-button ${group === selectedGroup ? "active" : ""}" data-group="${group}" type="button">
-        ${group}
+      <button class="group-button ${group.name === selectedGroup ? "active" : ""}" data-group="${group.name}" type="button">
+        ${display(group.name)}
       </button>
     `,
   ).join("");
@@ -193,11 +257,11 @@ function systemDashboard(system) {
     <section class="system-section" id="${system.system}">
       <div class="system-heading">
         <div>
-          <p>${system.group}</p>
-          <h2>${system.system}</h2>
+          <p>${display(system.group)}</p>
+          <h2>${display(system.system)}</h2>
         </div>
         <div>
-          <span>${system.sourceFile}</span>
+          <span>${display(system.sourceFile)}</span>
           <time>Updated ${lastModified}</time>
         </div>
       </div>
@@ -259,6 +323,7 @@ function systemDashboard(system) {
         </section>
 
         ${failurePanel(system)}
+        ${issuesPanel(system)}
 
         <article class="panel module-panel">
           <div class="panel-header">
@@ -279,8 +344,8 @@ function systemDashboard(system) {
           </div>
           <div class="module-grid">
             <div class="explain">
-              <h3>${system.system} Summary</h3>
-              <p>This section reads the Overview tab from ${system.sourceFile}. Save the workbook, refresh this page, and the dashboard reflects the latest saved values.</p>
+              <h3>${display(system.system)} Summary</h3>
+              <p>This section reads the Overview tab from ${display(system.sourceFile)}. Save the workbook, refresh this page, and the dashboard reflects the latest saved values.</p>
               <div class="legend">
                 <span><i style="background:#FFC000"></i> Completion</span>
                 <span><i style="background:#FFCA08"></i> Pass rate</span>
@@ -320,10 +385,10 @@ function render() {
     <section class="workspace">
       <header class="topbar">
         <div class="brand">
-          <div class="brand-mark">TNKNO</div>
+          <div class="brand-mark">PATHO</div>
           <div>
-            <h1>${dashboardData.title}</h1>
-            <p>${group.name} systems dashboard</p>
+            <h1>${display(dashboardData.title)}</h1>
+            <p>${display(group.name)} commissioning dashboard</p>
           </div>
         </div>
         <div class="source-meta">
@@ -339,8 +404,8 @@ function render() {
 
       <section class="group-summary">
         <div>
-          <p>${group.name}</p>
-          <h2>${group.name} L3 Checksheet Systems</h2>
+          <p>${display(group.name)}</p>
+          <h2>${display(group.name)} L3 Checksheet Systems</h2>
         </div>
         <div class="system-pills">
           ${group.systems
@@ -389,7 +454,7 @@ async function load() {
 
 window.addEventListener("hashchange", () => {
   const hash = location.hash.replace("#", "");
-  if (GROUPS.includes(hash)) {
+  if (dashboardData?.groups.some((group) => group.name === hash)) {
     selectedGroup = hash;
     if (dashboardData) render();
   }
